@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"sync"
+	"tag-monitor/helpers"
 
 	"github.com/google/go-github/v37/github"
 	"github.com/robfig/cron"
@@ -14,60 +14,15 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// repositories we track
-var node = "node-mongodb-native"
-var java = "mongo-java-driver" // java/reactive/scala
-var c = "mongo-c-driver"
-var swift = "mongo-swift-driver"
-var rust = "mongo-rust-driver"
-var csharp = "mongo-csharp-driver"
-var goDriver = "mongo-go-driver"
-var ruby = "mongo-ruby-driver"
-var cxx = "mongo-cxx-driver"
-var php = "mongo-php-driver"
-var python = "mongo-python-driver"
-var motor = "motor"
-var kafka = "mongo-kafka"
-var spark = "mongo-spark"
-
-// testing purposes first
-
-var testRepo = "rustsweeper"
-var testOrg = "terakilobyte"
-
-// mongodb vars
-var DB = "tags"
-
-type MongoTags struct {
-	Repo string   `bson:"repo"`
-	Tags []string `bson:"tags"`
-}
-
-var organization = "mongodb"
-
-var monitoredRepositories = []string{
-	node,
-	java,
-	c,
-	swift,
-	rust,
-	csharp,
-	goDriver,
-	ruby,
-	cxx,
-	php,
-	python,
-	motor,
-	kafka,
-	spark,
-}
-
 func main() {
 	var wg = &sync.WaitGroup{}
+	// adding 1 to the waitgroup here to make the program wait indefinitely
 	wg.Add(1)
 	c := cron.New()
 	// check for tags at start of hour (times of form **:00)
 	c.AddFunc("@hourly", func() {
+		// to test every minute, uncomment the following line
+		// c.AddFunc("0 * * * * *", func() {
 		log.Println("Checking for new tags...")
 		doChecks()
 		log.Println("Done checking for new tags.")
@@ -83,17 +38,16 @@ func main() {
 func doChecks() {
 	githubClient := github.NewClient(nil)
 	ctx := context.Background()
-	uri := os.Getenv("TAG_MONITOR")
-	mongoClient, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	mongoClient, err := mongo.Connect(ctx, options.Client().ApplyURI(helpers.DBURI))
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	var wgMongo = &sync.WaitGroup{}
 
-	for _, repository := range monitoredRepositories {
+	for _, repository := range helpers.MonitoredRepositories {
 		wgMongo.Add(1)
-		go checkRepositoriesForNewTags(githubClient, mongoClient, ctx, wgMongo, organization, repository)
+		go checkRepositoriesForNewTags(githubClient, mongoClient, ctx, wgMongo, helpers.Organization, repository)
 	}
 	wgMongo.Wait()
 	if err = mongoClient.Disconnect(ctx); err != nil {
@@ -116,13 +70,13 @@ func checkRepositoriesForNewTags(githubClient *github.Client, mongoClient *mongo
 		foundTags[ix] = tagName
 	}
 
-	mongoCollection := mongoClient.Database(DB).Collection(repository)
-	var existingTags MongoTags
-	err = mongoCollection.FindOne(ctx, bson.M{"repo": testRepo}).Decode(&existingTags)
+	mongoCollection := mongoClient.Database(helpers.DB).Collection(repository)
+	var existingTags helpers.MongoTags
+	err = mongoCollection.FindOne(ctx, bson.M{"repo": repository}).Decode(&existingTags)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			insertDoc := bson.D{
-				{"repo", testRepo},
+				{"repo", repository},
 				{"tags", foundTags},
 			}
 			_, err := mongoCollection.InsertOne(ctx, insertDoc)
@@ -142,7 +96,7 @@ func checkRepositoriesForNewTags(githubClient *github.Client, mongoClient *mongo
 		updateDoc := bson.D{
 			{"$set", bson.D{{"tags", foundTags}}},
 		}
-		ur, err := mongoCollection.UpdateOne(ctx, bson.M{"repo": testRepo}, updateDoc)
+		ur, err := mongoCollection.UpdateOne(ctx, bson.M{"repo": repository}, updateDoc)
 		if err != nil {
 			log.Panic(err)
 		}
